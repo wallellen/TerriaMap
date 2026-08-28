@@ -2,14 +2,14 @@
   "name": "terriajs-plugin-search",
   "version": "0.1.0",
   "description": "A TerriaJS plugin that provides a simple attribute search panel for WMS/WFS layers.",
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
+  "main": "src/index.js",
   "license": "MIT",
   "scripts": {
-    "build": "tsc --outDir dist",
-    "prepublishOnly": "npm run build"
+    "build": "echo \"No build step configured for plugin workspace.\""
   },
   "dependencies": {
-    "terriajs-plugin-api": "0.0.1-alpha.17"
+    "terriajs-plugin-api": "0.0.1-alpha.17",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
   }
 }
