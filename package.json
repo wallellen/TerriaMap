@@ -1,7 +1,4 @@
 {
-  "private": true,
-  "name": "terriajs-map",
-  "version": "0.4.7",
   "description": "Geospatial catalog explorer based on TerriaJS.",
   "license": "Apache-2.0",
   "engines": {
@@ -26,10 +23,6 @@
     "@types/react-dom": "^18.3.1"
   },
   "devDependencies": {
-    "@babel/core": "^7.29.0",
-    "@babel/preset-env": "^7.29.2",
-    "@babel/preset-react": "^7.28.5",
-    "@eslint/js": "^10.0.1",
     "@typescript-eslint/eslint-plugin": "^8.58.1",
     "@typescript-eslint/parser": "^8.58.1",
     "babel-loader": "^10.1.1",
@@ -82,9 +75,10 @@
     "gulp": "gulp",
     "build": "gulp build",
     "dev": "gulp dev",
-    "postinstall": "echo 'Installation successful. What to do next:\\n  yarn gulp dev   # Starts the server on port 3001, builds TerriaMap and dependencies, and rebuilds if files change.'",
+    "postinstall": "echo 'Installation successful. What to do next:\n  yarn gulp dev   # Starts the server on port 3001, builds TerriaMap and dependencies, and rebuilds if files change.'",
     "prettier": "prettier --write .",
     "prettier-check": "prettier --check .",
     "lint": "gulp lint"
-  }
+  },
+  "workspaces": ["plugins/*"]
 }
