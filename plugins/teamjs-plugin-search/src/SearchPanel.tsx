@@ -48,12 +48,15 @@ async function fetchLayerProperties(wfsBase: string, layerName: string): Promise
       const name = el.getAttribute("name");
       const type = el.getAttribute("type") || "";
       if (!name) continue;
-      // Skip geometry-like fields (gml, geometry, MULTI*, etc.)
       const lowerType = type.toLowerCase();
+      // Skip geometry-like fields (gml, geometry, MULTI*, etc.)
       if (lowerType.includes("gml") || lowerType.includes("geometry") || lowerType.includes("point") || lowerType.includes("polygon") || lowerType.includes("multi")) {
         continue;
       }
-      props.push(name);
+      // Only include textual types when possible
+      if (lowerType.includes("string") || lowerType.includes("char") || lowerType.includes("token") || lowerType === "") {
+        props.push(name);
+      }
     }
     // Deduplicate preserving order
     return Array.from(new Set(props));
@@ -72,6 +75,9 @@ export default function SearchPanel({ terria, viewState }: Props) {
   const [loading, setLoading] = useState(false);
   const [properties, setProperties] = useState<string[]>([]);
   const [selectedProperty, setSelectedProperty] = useState<string | null>(null);
+  const [pageSize, setPageSize] = useState<number>(50);
+  const [startIndex, setStartIndex] = useState<number>(0);
+  const [hasMore, setHasMore] = useState<boolean>(false);
 
   useEffect(() => {
     let catalogSource: any = null;
@@ -108,10 +114,14 @@ export default function SearchPanel({ terria, viewState }: Props) {
 
   if (!viewState || !viewState.showSearchPanel) return null;
 
-  async function doSearch() {
+  async function doSearch(reset = true) {
     if (!selectedLayer) return;
     setLoading(true);
-    setResults([]);
+    if (reset) {
+      setResults([]);
+      setStartIndex(0);
+      setHasMore(false);
+    }
     try {
       const getProp = (obj: any, keys: string[]) => keys.reduce((acc: any, k: string) => (acc && (acc[k] || (acc.get && acc.get(k)))) || acc, obj);
       const baseUrl = selectedLayer.url || getProp(selectedLayer, ["service", "url"]);
@@ -125,14 +135,17 @@ export default function SearchPanel({ terria, viewState }: Props) {
         wfsBase = wfsBase.slice(0, -4) + "wfs";
       }
       const propertyName = selectedProperty || selectedLayer.queryProperty || "NAME";
-      // Use ILIKE for case-insensitive partial match if server supports it; otherwise you can adjust
+      const currentStart = reset ? 0 : startIndex;
       const cql = encodeURIComponent(`${propertyName} ILIKE '%${queryText}%'`);
-      const url = `${wfsBase}?service=WFS&version=1.1.0&request=GetFeature&typeName=${encodeURIComponent(layerName)}&outputFormat=application/json&CQL_FILTER=${cql}&count=100`;
+      const url = `${wfsBase}?service=WFS&version=1.1.0&request=GetFeature&typeName=${encodeURIComponent(layerName)}&outputFormat=application/json&CQL_FILTER=${cql}&count=${pageSize}&startIndex=${currentStart}`;
 
       const resp = await fetch(url);
       if (!resp.ok) throw new Error(`查询失败: ${resp.status}`);
       const geojson = await resp.json();
-      setResults(geojson.features || []);
+      const newFeatures = geojson.features || [];
+      setResults((prev) => (reset ? newFeatures : prev.concat(newFeatures)));
+      setStartIndex((prev) => (reset ? newFeatures.length : prev + newFeatures.length));
+      setHasMore(newFeatures.length === pageSize);
     } catch (e: any) {
       // eslint-disable-next-line no-console
       console.error(e);
@@ -140,6 +153,10 @@ export default function SearchPanel({ terria, viewState }: Props) {
     } finally {
       setLoading(false);
     }
+  }
+
+  function loadMore() {
+    doSearch(false);
   }
 
   function onResultClick(feature: any) {
@@ -193,10 +210,16 @@ export default function SearchPanel({ terria, viewState }: Props) {
                 properties.map((p) => <option key={p} value={p}>{p}</option>)
               )}
             </select>
+            <select value={String(pageSize)} onChange={(e) => setPageSize(Number(e.target.value))}>
+              <option value="10">10</option>
+              <option value="25">25</option>
+              <option value="50">50</option>
+              <option value="100">100</option>
+            </select>
           </div>
 
           <div style={{ marginTop: 8 }}>
-            <button onClick={doSearch} disabled={loading || !selectedLayer}>查询</button>
+            <button onClick={() => doSearch(true)} disabled={loading || !selectedLayer}>查询</button>
             {loading ? <span style={{ marginLeft: 8 }}>查询中…</span> : null}
           </div>
 
@@ -209,12 +232,13 @@ export default function SearchPanel({ terria, viewState }: Props) {
                 </li>
               ))}
             </ul>
+            {hasMore ? <div style={{ textAlign: "center", marginTop: 8 }}><button onClick={loadMore}>加载更多</button></div> : null}
           </div>
         </div>
 
         <div className="tjs-col tjs-right">
           <div className="tjs-col-title">说明</div>
-          <div className="tjs-help">- 使用 WFS GetFeature (GeoJSON) 进行属性搜索。<br/>- 描述属性通过 WFS DescribeFeatureType 获取并在下拉中选择。<br/>- 若 GeoServer 未启用 WFS 或受限，请使用代理或开启 CORS。<br/>- 点击结果会把要素添加到地图并缩放。</div>
+          <div className="tjs-help">- 使用 WFS GetFeature (GeoJSON) 进行属性搜索。<br/>- 描述属性通过 WFS DescribeFeatureType 获取并在下拉中选择（仅显示文本字段）。<br/>- 若 GeoServer 未启用 WFS 或受限，请使用代理或开启 CORS。<br/>- 点击结果会把要素添加到地图并缩放。</div>
         </div>
       </div>
     </div>

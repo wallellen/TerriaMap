@@ -28,6 +28,12 @@ export const TerriaUserInterface = ({ terria, viewState, themeOverrides }) => {
         {relatedMaps && relatedMaps.length > 0 ? (
           <RelatedMaps relatedMaps={relatedMaps} />
         ) : null}
+        {/* Query plugin menu button: toggles the search panel registered by the terriajs-plugin-search plugin */}
+        <MenuItem
+          caption="查询"
+          onClick={() => viewState && viewState.toggleSearchPanel && viewState.toggleSearchPanel()}
+          key="query-button"
+        />
       </MenuLeft>
     </StandardUserInterface>
   );
