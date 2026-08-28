@@ -1,6 +1,4 @@
 import React, { useEffect, useState } from "react";
-// Imported as any to avoid compilation dependency on terriajs types in this minimal plugin.
-// In a stricter setup you can install @types/terriajs or appropriate type definitions.
 import GeoJsonCatalogItem from "terriajs/lib/Models/GeoJsonCatalogItem";
 import "./styles.css";
 
@@ -29,6 +27,13 @@ function flattenCatalogMembers(memberOrGroup: any, out: any[] = []): any[] {
   return out;
 }
 
+/**
+ * Robust DescribeFeatureType parser:
+ * - Uses getElementsByTagNameNS to handle arbitrary namespaces
+ * - Looks for elements with name/type attributes
+ * - Filters out geometry-like types (gml, geometry)
+ * - Prefers textual/date fields but returns any non-geometry fields
+ */
 async function fetchLayerProperties(wfsBase: string, layerName: string): Promise<string[]> {
   try {
     const url = `${wfsBase}?service=WFS&version=1.1.0&request=DescribeFeatureType&typeName=${encodeURIComponent(
@@ -39,27 +44,36 @@ async function fetchLayerProperties(wfsBase: string, layerName: string): Promise
     const xmlText = await resp.text();
     const parser = new DOMParser();
     const doc = parser.parseFromString(xmlText, "application/xml");
-    // Search for xsd:element under complexType
-    const elements = Array.from(doc.getElementsByTagName("xsd:element")).concat(
-      Array.from(doc.getElementsByTagName("element"))
-    );
-    const props: string[] = [];
-    for (const el of elements) {
+
+    // Collect <element> nodes across namespaces
+    const nsElements = Array.from(doc.getElementsByTagNameNS("*", "element"));
+    const xsdElements = Array.from(doc.getElementsByTagNameNS("*", "element"));
+    const allElements = Array.from(new Set([...nsElements, ...xsdElements]));
+
+    const props: { name: string; type: string }[] = [];
+
+    for (const el of allElements) {
       const name = el.getAttribute("name");
-      const type = el.getAttribute("type") || "";
+      const type = el.getAttribute("type") || el.getAttribute("typeName") || "";
       if (!name) continue;
       const lowerType = type.toLowerCase();
-      // Skip geometry-like fields (gml, geometry, MULTI*, etc.)
-      if (lowerType.includes("gml") || lowerType.includes("geometry") || lowerType.includes("point") || lowerType.includes("polygon") || lowerType.includes("multi")) {
+      // Skip geometry-like fields
+      if (lowerType.includes("gml") || lowerType.includes("geometry") || lowerType.includes("point") || lowerType.includes("polygon") || lowerType.includes("multi") || name.toLowerCase().includes("geom") || name.toLowerCase().includes("the_geom")) {
         continue;
       }
-      // Only include textual types when possible
-      if (lowerType.includes("string") || lowerType.includes("char") || lowerType.includes("token") || lowerType === "") {
-        props.push(name);
-      }
+      props.push({ name, type });
     }
-    // Deduplicate preserving order
-    return Array.from(new Set(props));
+
+    // Heuristic ordering: prefer textual types first
+    const textual = props.filter((p) => {
+      const t = (p.type || "").toLowerCase();
+      return t.includes("string") || t.includes("char") || t.includes("token") || t.includes("date") || t.includes("time");
+    });
+    const others = props.filter((p) => !textual.includes(p));
+    const ordered = [...textual, ...others].map((p) => p.name);
+
+    // Deduplicate and return
+    return Array.from(new Set(ordered));
   } catch (e) {
     // eslint-disable-next-line no-console
     console.warn("Failed to fetch properties:", e);
@@ -74,7 +88,9 @@ export default function SearchPanel({ terria, viewState }: Props) {
   const [results, setResults] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
   const [properties, setProperties] = useState<string[]>([]);
-  const [selectedProperty, setSelectedProperty] = useState<string | null>(null);
+  const [selectedProperties, setSelectedProperties] = useState<string[]>([]);
+  const [operator, setOperator] = useState<"OR" | "AND">("OR");
+  const [fuzzy, setFuzzy] = useState<boolean>(true);
   const [pageSize, setPageSize] = useState<number>(50);
   const [startIndex, setStartIndex] = useState<number>(0);
   const [hasMore, setHasMore] = useState<boolean>(false);
@@ -94,7 +110,7 @@ export default function SearchPanel({ terria, viewState }: Props) {
     async function loadProps() {
       if (!selectedLayer) {
         setProperties([]);
-        setSelectedProperty(null);
+        setSelectedProperties([]);
         return;
       }
       const baseUrl = selectedLayer.url || (selectedLayer.service && selectedLayer.service.url) || (selectedLayer.get && selectedLayer.get("url"));
@@ -106,16 +122,28 @@ export default function SearchPanel({ terria, viewState }: Props) {
       const layerName = selectedLayer.layer || selectedLayer.layers || selectedLayer.name || (selectedLayer.get && selectedLayer.get("layers"));
       const props = await fetchLayerProperties(wfsBase, layerName);
       setProperties(props);
-      if (props.length > 0) setSelectedProperty(props[0]);
-      else setSelectedProperty(selectedLayer.queryProperty || "NAME");
+      if (props.length > 0) setSelectedProperties([props[0]]);
+      else setSelectedProperties(selectedLayer.queryProperty ? [selectedLayer.queryProperty] : []);
     }
     loadProps();
   }, [selectedLayer]);
 
   if (!viewState || !viewState.showSearchPanel) return null;
 
+  function toggleProperty(name: string) {
+    setSelectedProperties((prev) => {
+      if (prev.includes(name)) return prev.filter((p) => p !== name);
+      return [...prev, name];
+    });
+  }
+
   async function doSearch(reset = true) {
     if (!selectedLayer) return;
+    if (selectedProperties.length === 0) {
+      alert("请至少选择一个属性字段进行查询");
+      return;
+    }
+
     setLoading(true);
     if (reset) {
       setResults([]);
@@ -134,9 +162,18 @@ export default function SearchPanel({ terria, viewState }: Props) {
       if (wfsBase.toLowerCase().endsWith("/wms")) {
         wfsBase = wfsBase.slice(0, -4) + "wfs";
       }
-      const propertyName = selectedProperty || selectedLayer.queryProperty || "NAME";
+
+      const pattern = (val: string) => (fuzzy ? `'%${val}%'` : `'${val}'`);
+
+      // Build CQL by combining selectedProperties
+      const clauses = selectedProperties.map((prop) => {
+        const op = fuzzy ? "ILIKE" : "=";
+        return `${prop} ${op} ${pattern(queryText)}`;
+      });
+      const combined = clauses.join(` ${operator} `);
+
       const currentStart = reset ? 0 : startIndex;
-      const cql = encodeURIComponent(`${propertyName} ILIKE '%${queryText}%'`);
+      const cql = encodeURIComponent(combined);
       const url = `${wfsBase}?service=WFS&version=1.1.0&request=GetFeature&typeName=${encodeURIComponent(layerName)}&outputFormat=application/json&CQL_FILTER=${cql}&count=${pageSize}&startIndex=${currentStart}`;
 
       const resp = await fetch(url);
@@ -161,10 +198,18 @@ export default function SearchPanel({ terria, viewState }: Props) {
 
   function onResultClick(feature: any) {
     try {
+      // create a temporary geojson layer and attempt to style it for highlight
       const item = new GeoJsonCatalogItem(terria);
       item.name = `查询结果: ${feature.id || (feature.properties && (feature.properties.name || feature.properties.title)) || "要素"}`;
       item.isEnabled = true;
       item.geoJson = { type: "FeatureCollection", features: [feature] };
+      // Try setting common style fields - terriajs may respect these depending on version
+      try {
+        (item as any).point = { color: "#ff0000", pixelSize: 12 };
+        (item as any).fill = "#ff0000";
+        (item as any).stroke = "#ff0000";
+      } catch {}
+
       if (terria.addModel) {
         terria.addModel(item);
       } else if (terria.workbench && terria.workbench.add) {
@@ -174,6 +219,16 @@ export default function SearchPanel({ terria, viewState }: Props) {
       }
       if (item.zoomTo) {
         item.zoomTo();
+      }
+
+      // also set a quick visual flash if viewer provides ability (best-effort)
+      try {
+        const viewer = terria.currentViewer || terria.cesium || terria.leaflet || null;
+        if (viewer && (viewer as any).zoomTo) {
+          (viewer as any).zoomTo(item);
+        }
+      } catch (e) {
+        // ignore
       }
     } catch (e) {
       // eslint-disable-next-line no-console
@@ -201,21 +256,41 @@ export default function SearchPanel({ terria, viewState }: Props) {
         </div>
 
         <div className="tjs-col tjs-middle">
-          <div style={{ display: "flex", gap: 8 }}>
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
             <input className="tjs-input" value={queryText} onChange={(e) => setQueryText(e.target.value)} placeholder="在选中图层中输入要查询的关键字" />
-            <select value={selectedProperty || ""} onChange={(e) => setSelectedProperty(e.target.value)}>
-              {properties.length === 0 ? (
-                <option value="">(未发现属性，使用默认)</option>
-              ) : (
-                properties.map((p) => <option key={p} value={p}>{p}</option>)
-              )}
-            </select>
-            <select value={String(pageSize)} onChange={(e) => setPageSize(Number(e.target.value))}>
-              <option value="10">10</option>
-              <option value="25">25</option>
-              <option value="50">50</option>
-              <option value="100">100</option>
-            </select>
+
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              <div style={{ fontSize: 12 }}>选择字段（多选）</div>
+              <div style={{ maxHeight: 120, overflow: "auto", border: "1px solid #eee", padding: 6 }}>
+                {properties.length === 0 ? <div style={{ fontSize: 12, color: "#666" }}>(未发现属性)</div> : null}
+                {properties.map((p) => (
+                  <label key={p} style={{ display: "block", marginBottom: 4 }}>
+                    <input type="checkbox" checked={selectedProperties.includes(p)} onChange={() => toggleProperty(p)} /> {p}
+                  </label>
+                ))}
+              </div>
+            </div>
+
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              <div style={{ fontSize: 12 }}>组合</div>
+              <select value={operator} onChange={(e) => setOperator(e.target.value as "OR" | "AND")}> 
+                <option value="OR">OR</option>
+                <option value="AND">AND</option>
+              </select>
+
+              <label style={{ marginTop: 8 }}>
+                <input type="checkbox" checked={fuzzy} onChange={() => setFuzzy(!fuzzy)} /> 模糊匹配
+              </label>
+
+              <div style={{ marginTop: 8 }}>
+                <select value={String(pageSize)} onChange={(e) => setPageSize(Number(e.target.value))}>
+                  <option value="10">10</option>
+                  <option value="25">25</option>
+                  <option value="50">50</option>
+                  <option value="100">100</option>
+                </select>
+              </div>
+            </div>
           </div>
 
           <div style={{ marginTop: 8 }}>
@@ -238,7 +313,7 @@ export default function SearchPanel({ terria, viewState }: Props) {
 
         <div className="tjs-col tjs-right">
           <div className="tjs-col-title">说明</div>
-          <div className="tjs-help">- 使用 WFS GetFeature (GeoJSON) 进行属性搜索。<br/>- 描述属性通过 WFS DescribeFeatureType 获取并在下拉中选择（仅显示文本字段）。<br/>- 若 GeoServer 未启用 WFS 或受限，请使用代理或开启 CORS。<br/>- 点击结果会把要素添加到地图并缩放。</div>
+          <div className="tjs-help">- 使用 WFS GetFeature (GeoJSON) 进行属性搜索。<br/>- 描述属性通过 WFS DescribeFeatureType 获取并在下拉中选择（过滤几何字段并优先显示文本/日期字段）。<br/>- 可选择多字段组合并指定 AND/OR、模糊/精确匹配。<br/>- 若 GeoServer 未启用 WFS 或受限，请使用代理或开启 CORS。<br/>- 点击结果会把要素添加到地图并缩放。</div>
         </div>
       </div>
     </div>
