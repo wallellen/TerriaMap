@@ -12,7 +12,10 @@
     "url": "http://github.com/TerriaJS/TerriaMap"
   },
   "dependencies": {
-    "terriajs-server": "5.0.0-alpha.3"
+    "terriajs-server": "5.0.0-alpha.3",
+    "@turf/turf": "^6.5.0",
+    "geojson-rbush": "^2.2.3",
+    "rbush": "^3.0.1"
   },
   "config": {
     "docker": {
@@ -82,7 +85,7 @@
     "gulp": "gulp",
     "build": "gulp build",
     "dev": "gulp dev",
-    "postinstall": "echo 'Installation successful. What to do next:\\n  yarn gulp dev   # Starts the server on port 3001, builds TerriaMap and dependencies, and rebuilds if files change.'",
+    "postinstall": "echo 'Installation successful. What to do next:\n  yarn gulp dev   # Starts the server on port 3001, builds TerriaMap and dependencies, and rebuilds if files change.'",
     "prettier": "prettier --write .",
     "prettier-check": "prettier --check .",
     "lint": "gulp lint"
