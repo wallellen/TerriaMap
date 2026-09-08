@@ -9,6 +9,9 @@ COPY --chown=node:node . /app
 
 WORKDIR /app
 
+# TerriaJS's postinstall needs the Gulp installed by this project's devDependencies.
+ENV PATH="/app/node_modules/.bin:${PATH}"
+
 RUN yarn install --network-timeout 1000000
 RUN yarn gulp release
 
